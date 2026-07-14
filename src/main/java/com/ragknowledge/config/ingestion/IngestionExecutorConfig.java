@@ -1,7 +1,9 @@
 package com.ragknowledge.config.ingestion;
 
+import org.springframework.boot.task.ThreadPoolTaskExecutorBuilder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 /**
@@ -32,5 +34,19 @@ public class IngestionExecutorConfig {
         // 应用关闭时不等待长耗时任务完成，中断残留的 PARSING/EMBEDDING 状态由启动恢复流程标记失败。
         executor.setWaitForTasksToCompleteOnShutdown(false);
         return executor;
+    }
+
+    /**
+     * 应用默认异步线程池。项目自定义了 ingestionTaskExecutor 后，
+     * Spring Boot 的 TaskExecutionAutoConfiguration 会整体退避，导致 MVC 异步请求
+     * （SSE 流式问答）回落到不适合生产的 SimpleAsyncTaskExecutor 并打出警告，
+     * 因此需要显式重建 applicationTaskExecutor，沿用 spring.task.execution.* 配置。
+     *
+     * @param builder Spring Boot 提供的线程池构建器（已绑定 spring.task.execution 配置）
+     * @return 应用默认异步线程池
+     */
+    @Bean
+    public AsyncTaskExecutor applicationTaskExecutor(ThreadPoolTaskExecutorBuilder builder) {
+        return builder.build();
     }
 }

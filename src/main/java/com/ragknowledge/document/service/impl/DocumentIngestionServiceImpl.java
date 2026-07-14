@@ -145,7 +145,9 @@ public class DocumentIngestionServiceImpl implements DocumentIngestionService {
             addVectorDocuments(chunkVectorDocuments);
             // 入库成功后更新文档状态和 chunk 数量，调用方通过文档详情即可看到可检索状态。
             updateDocumentStatus(document, DocumentStatus.COMPLETED, null, chunkVectorDocuments.size());
-        } catch (RuntimeException exception) {
+        } catch (Throwable exception) {
+            // 必须捕获 Throwable 而不是 RuntimeException：依赖冲突等问题会抛 NoSuchMethodError 这类 Error，
+            // 若逃出后台线程，文档会永久卡在 PARSING/EMBEDDING 状态，无法删除也无法重试（只能等重启恢复）。
             // 入库失败时尽力删除新写入的向量，避免失败文档仍参与后续检索。
             documentVectorCleanupService.deleteVectorsQuietly(vectorDocumentIds);
             // 入库失败时同步清理本次可能写入的活跃 chunk，保持 FAILED 状态下 chunk_count 为 0。
@@ -550,7 +552,7 @@ public class DocumentIngestionServiceImpl implements DocumentIngestionService {
      * @param document  文档实体
      * @param exception 入库异常
      */
-    private void markDocumentFailed(KnowledgeDocumentEntity document, RuntimeException exception) {
+    private void markDocumentFailed(KnowledgeDocumentEntity document, Throwable exception) {
         // 完整异常必须进日志，failure_reason 对外只保留脱敏文案，运维通过 documentId 关联排查。
         log.error("Document ingestion failed, documentId={}", document.getId(), exception);
         // 失败原因需要脱敏和裁剪，避免底层异常消息把路径、SQL 等内部细节泄露给 API 调用方。
@@ -566,7 +568,7 @@ public class DocumentIngestionServiceImpl implements DocumentIngestionService {
      * @param exception 入库异常
      * @return 可保存并对外展示的失败原因
      */
-    private String normalizeFailureReason(RuntimeException exception) {
+    private String normalizeFailureReason(Throwable exception) {
         String message;
 
         // 业务异常的消息由服务层显式编写（如"文档解析结果为空"），不含内部实现细节，可安全对外。

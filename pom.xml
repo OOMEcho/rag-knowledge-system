@@ -36,6 +36,13 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
+            <!-- Testcontainers 传递引入的 1.24.0 会在版本仲裁中顶掉 Tika 3.3.1 需要的 1.28.0，
+                 导致解析 docx/zip 类文档时抛 NoSuchMethodError，必须显式锁定为 Tika 声明的版本。 -->
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-compress</artifactId>
+                <version>1.28.0</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 
