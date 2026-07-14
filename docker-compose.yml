@@ -1,0 +1,47 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: rag-knowledge-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-rag_knowledge}
+      POSTGRES_USER: ${POSTGRES_USER:-rag_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rag_password}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - rag_knowledge_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rag_user} -d ${POSTGRES_DB:-rag_knowledge}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rag-knowledge-app
+    profiles:
+      - app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SERVER_PORT: 8080
+      POSTGRES_JDBC_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-rag_knowledge}
+      POSTGRES_USER: ${POSTGRES_USER:-rag_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rag_password}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-qwen3.6:35b}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-qwen3-embedding:0.6b}
+      RAG_STORAGE_LOCAL_ROOT: /app/data/uploads
+    ports:
+      - "${SERVER_PORT:-8080}:8080"
+    volumes:
+      - rag_knowledge_upload_data:/app/data/uploads
+    restart: unless-stopped
+
+volumes:
+  rag_knowledge_postgres_data:
+  rag_knowledge_upload_data:

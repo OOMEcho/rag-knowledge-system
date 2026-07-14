@@ -1,0 +1,163 @@
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+
+spring:
+  application:
+    name: rag-knowledge-system
+  http:
+    client:
+      connect-timeout: ${HTTP_CLIENT_CONNECT_TIMEOUT:2s}
+      # 全局 read-timeout 同时作用于 Spring AI 的 Ollama 调用，本地大模型生成可能耗时数分钟。
+      read-timeout: ${HTTP_CLIENT_READ_TIMEOUT:300s}
+  servlet:
+    multipart:
+      max-file-size: ${RAG_UPLOAD_MAX_FILE_SIZE:50MB}
+      max-request-size: ${RAG_UPLOAD_MAX_REQUEST_SIZE:60MB}
+  mvc:
+    async:
+      # SSE 流式问答依赖 MVC 异步请求，超时需覆盖本地大模型完整生成时长。
+      request-timeout: ${MVC_ASYNC_REQUEST_TIMEOUT:600s}
+  datasource:
+    driver-class-name: org.postgresql.Driver
+    url: ${POSTGRES_JDBC_URL:jdbc:postgresql://localhost:5432/rag_knowledge}
+    username: ${POSTGRES_USER:rag_user}
+    password: ${POSTGRES_PASSWORD:rag_password}
+    hikari:
+      maximum-pool-size: ${POSTGRES_POOL_MAX_SIZE:10}
+      minimum-idle: ${POSTGRES_POOL_MIN_IDLE:2}
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+  ai:
+    model:
+      chat: ollama
+      embedding: ollama
+    ollama:
+      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+      init:
+        pull-model-strategy: never
+        timeout: 60s
+        max-retries: 0
+      chat:
+        options:
+          model: ${OLLAMA_CHAT_MODEL:qwen3.6:35b}
+          temperature: ${OLLAMA_CHAT_TEMPERATURE:0.2}
+      embedding:
+        options:
+          model: ${OLLAMA_EMBEDDING_MODEL:qwen3-embedding:0.6b}
+    vectorstore:
+      pgvector:
+        initialize-schema: true
+        # pgvector HNSW 索引最多支持 2000 维，qwen3-embedding:0.6b 输出 1024 维。
+        dimensions: ${RAG_VECTOR_DIMENSIONS:1024}
+        distance-type: COSINE_DISTANCE
+        index-type: HNSW
+        schema-name: public
+        table-name: rag_vector_store
+        # 业务侧使用雪花 ID 字符串作为向量文档 ID，id 列必须是 TEXT 而不是默认 UUID。
+        id-type: TEXT
+        max-document-batch-size: ${RAG_VECTOR_BATCH_SIZE:1000}
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+  global-config:
+    banner: false
+    db-config:
+      id-type: assign_id
+
+springdoc:
+  api-docs:
+    enabled: true
+    path: /v3/api-docs
+  swagger-ui:
+    enabled: true
+    path: /swagger-ui.html
+    operations-sorter: method
+    tags-sorter: alpha
+  packages-to-scan: com.ragknowledge
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+
+logging:
+  pattern:
+    level: "%5p [requestId:%X{requestId:-}]"
+  level:
+    com.ragknowledge: INFO
+
+rag:
+  storage:
+    local-root: ${RAG_STORAGE_LOCAL_ROOT:data/uploads}
+  ingestion:
+    chunk-size: ${RAG_INGESTION_CHUNK_SIZE:800}
+    min-chunk-size-chars: ${RAG_INGESTION_MIN_CHUNK_SIZE_CHARS:350}
+    min-chunk-length-to-embed: ${RAG_INGESTION_MIN_CHUNK_LENGTH_TO_EMBED:5}
+    max-num-chunks: ${RAG_INGESTION_MAX_NUM_CHUNKS:10000}
+    keep-separator: ${RAG_INGESTION_KEEP_SEPARATOR:true}
+    worker-count: ${RAG_INGESTION_WORKER_COUNT:2}
+    queue-capacity: ${RAG_INGESTION_QUEUE_CAPACITY:100}
+    allowed-file-extensions: ${RAG_INGESTION_ALLOWED_FILE_EXTENSIONS:txt,md,markdown,pdf,doc,docx,ppt,pptx,xls,xlsx,csv,html,htm}
+  maintenance:
+    orphan-cleanup:
+      enabled: ${RAG_ORPHAN_CLEANUP_ENABLED:true}
+      cron: ${RAG_ORPHAN_CLEANUP_CRON:0 0 3 * * *}
+      min-file-age: ${RAG_ORPHAN_CLEANUP_MIN_FILE_AGE:1h}
+  cors:
+    # 前后端分离部署的跨域白名单：默认放行本地 Vite 开发服务器，生产配置前端实际域名（逗号分隔）。
+    allowed-origins: ${RAG_CORS_ALLOWED_ORIGINS:http://localhost:5173}
+  security:
+    # 本地默认不开启认证保证开箱即用；生产必须使用 prod profile（强制开启）并配置 RAG_API_KEYS。
+    enabled: ${RAG_SECURITY_ENABLED:false}
+    api-keys: ${RAG_API_KEYS:}
+    header-name: ${RAG_API_KEY_HEADER:X-API-Key}
+    rate-limit:
+      enabled: ${RAG_RATE_LIMIT_ENABLED:true}
+      requests-per-minute: ${RAG_RATE_LIMIT_RPM:120}
+      rag-requests-per-minute: ${RAG_RATE_LIMIT_RAG_RPM:30}
+
+---
+# prod profile：生产安全基线，通过 SPRING_PROFILES_ACTIVE=prod 激活。
+# 强制开启 API Key 认证（未配置 RAG_API_KEYS 时启动失败）、关闭 Swagger、隐藏健康检查细节。
+spring:
+  config:
+    activate:
+      on-profile: prod
+
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+
+rag:
+  security:
+    enabled: true
+  retrieval:
+    default-top-k: ${RAG_DEFAULT_TOP_K:5}
+    max-top-k: ${RAG_MAX_TOP_K:20}
+    default-similarity-threshold: ${RAG_DEFAULT_SIMILARITY_THRESHOLD:0.65}
+    hybrid-enabled: ${RAG_HYBRID_ENABLED:true}
+    rrf-k: ${RAG_RRF_K:60}
+    channel-pool-multiplier: ${RAG_CHANNEL_POOL_MULTIPLIER:2}

@@ -1,0 +1,15 @@
+.git
+.github
+.idea
+.vscode
+.claude
+target
+data
+logs
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+README*.md
+src/test

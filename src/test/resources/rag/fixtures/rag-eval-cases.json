@@ -1,0 +1,14 @@
+[
+  {
+    "name": "reimbursement-deadline",
+    "knowledgeBase": "reimbursement-policy",
+    "question": "员工需要在多久内提交报销？",
+    "expectedKeywords": ["30 天", "发票", "付款凭证"]
+  },
+  {
+    "name": "large-amount-approval",
+    "knowledgeBase": "reimbursement-policy",
+    "question": "超过 5000 元的报销需要谁审批？",
+    "expectedKeywords": ["部门负责人", "财务负责人"]
+  }
+]
