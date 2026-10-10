@@ -21,6 +21,8 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -77,6 +79,10 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
         StoredDocumentFile storedFile = documentStorageService.storeUploadedFile(knowledgeBaseId, documentId, file);
 
         try {
+            // 文件准备完成后锁定知识库直到元数据提交；与知识库删除互斥，减少持锁期间的文件 I/O。
+            if (knowledgeBaseMapper.selectActiveForUpdate(knowledgeBaseId) == null) {
+                throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "知识库不存在", HttpStatus.NOT_FOUND);
+            }
             // 保存文件后立即检查重复，若重复则删除刚保存的文件并返回冲突错误。
             ensureNoDuplicateDocument(knowledgeBaseId, storedFile.checksumSha256());
             // 构造文档元数据实体，当前阶段状态停留在 UPLOADED，解析和向量化在 v0.3 处理。
@@ -133,8 +139,12 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void deleteDocument(Long id) {
-        // 删除前读取文档实体，确认文档存在并获取 storageKey 供文件清理使用。
-        KnowledgeDocumentEntity entity = findRequiredActiveDocument(id);
+        // 持有文档行锁直到提交；并发删除和入库条件更新必须等待，不能在状态检查后插入新任务。
+        KnowledgeDocumentEntity entity = knowledgeDocumentMapper.selectActiveForUpdate(id);
+        // 等待其他删除提交后，活跃行已不存在，不能再次扣减计数或清理数据。
+        if (entity == null) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "文档不存在", HttpStatus.NOT_FOUND);
+        }
 
         // 入库任务运行中禁止删除，否则删除清理和异步管道写入会交错执行，产生孤儿 chunk 或向量。
         if (PROCESSING_STATUSES.contains(entity.getStatus())) {
@@ -147,8 +157,24 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
         markDocumentDeleted(entity);
         // 文档删除成功后递减知识库文档计数，保证知识库列表展示准确。
         decrementKnowledgeBaseDocumentCount(entity.getKnowledgeBaseId());
-        // 数据库状态先更新，再尽力清理本地文件，避免文件删除失败影响元数据删除主流程。
-        documentStorageService.deleteStoredFile(entity.getStorageKey());
+        // 文件系统无法参加数据库回滚，只能在事务确认提交后删除原文件。
+        deleteStoredFileAfterCommit(entity.getStorageKey());
+    }
+
+    /**
+     * 在删除事务提交后清理原文件，回滚时保留文件供后续重试。
+     *
+     * @param storageKey 原文件存储键
+     */
+    private void deleteStoredFileAfterCommit(String storageKey) {
+        // 注册提交回调；文件删除失败由存储层记录并由孤儿文件任务补偿。
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                // 此时数据库删除已提交，文件清理不再破坏回滚后的文档可读性。
+                documentStorageService.deleteStoredFile(storageKey);
+            }
+        });
     }
 
     /**
@@ -331,8 +357,10 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
                 .set(KnowledgeDocumentEntity::getDeleted, DELETED)
                 .set(KnowledgeDocumentEntity::getDeletedAt, LocalDateTime.now())
                 .set(KnowledgeDocumentEntity::getUpdatedAt, LocalDateTime.now());
-        // 使用带 deleted 条件的更新，防止并发删除时重复覆盖同一文档状态。
-        knowledgeDocumentMapper.update(null, updateWrapper);
+        // 即使未来调整了行锁路径，也只允许成功删除的请求继续扣减知识库计数。
+        if (knowledgeDocumentMapper.update(null, updateWrapper) != 1) {
+            throw new BusinessException(ErrorCode.RESOURCE_CONFLICT, "文档状态已变化，请刷新后重试", HttpStatus.CONFLICT);
+        }
     }
 
     /**
@@ -348,7 +376,10 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
                 .setSql("document_count = document_count + 1")
                 .set(KnowledgeBaseEntity::getUpdatedAt, LocalDateTime.now());
         // 跨模块更新知识库计数是为了保证知识库列表无需每次聚合文档表，降低列表查询成本。
-        knowledgeBaseMapper.update(null, updateWrapper);
+        // 知识库不存在时不能提交无主文档，异常会回滚文档插入并由上传补偿删除文件。
+        if (knowledgeBaseMapper.update(null, updateWrapper) != 1) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "知识库不存在", HttpStatus.NOT_FOUND);
+        }
     }
 
     /**
@@ -364,7 +395,10 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
                 .setSql("document_count = GREATEST(document_count - 1, 0)")
                 .set(KnowledgeBaseEntity::getUpdatedAt, LocalDateTime.now());
         // 删除文档后同步更新知识库计数，保持列表字段和实际未删除文档数量一致。
-        knowledgeBaseMapper.update(null, updateWrapper);
+        // 计数与文档删除必须共同提交，知识库异常时回滚删除并保留原文件。
+        if (knowledgeBaseMapper.update(null, updateWrapper) != 1) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "知识库不存在", HttpStatus.NOT_FOUND);
+        }
     }
 
     /**

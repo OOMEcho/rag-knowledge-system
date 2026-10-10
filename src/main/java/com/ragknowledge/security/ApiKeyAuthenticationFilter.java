@@ -14,6 +14,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.List;
 
 /**
@@ -24,7 +26,7 @@ import java.util.List;
  */
 public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
 
-    // 认证主体只用于标识"API Key 调用方"，当前没有用户体系，不区分具体调用者身份。
+    // 主体用已验证 Key 的摘要区分调用方，限流不能信任原始请求头，也不应在缓存中保留凭证。
     private static final String API_KEY_PRINCIPAL = "api-key-client";
     private static final String API_KEY_AUTHORITY = "ROLE_API_CLIENT";
 
@@ -45,12 +47,29 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
         if (isValidApiKey(candidateKey)) {
             // 使用已认证构造器（带权限列表）生成 authenticated=true 的凭证，供后续授权规则放行。
             UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
-                    API_KEY_PRINCIPAL, null, List.of(new SimpleGrantedAuthority(API_KEY_AUTHORITY)));
+                    resolveClientPrincipal(candidateKey), null, List.of(new SimpleGrantedAuthority(API_KEY_AUTHORITY)));
             SecurityContextHolder.getContext().setAuthentication(authentication);
         }
 
         // 无论认证是否成功都继续过滤链，公开端点（如健康检查）不应被该过滤器拦截。
         filterChain.doFilter(request, response);
+    }
+
+    /**
+     * 为已验证的 Key 生成稳定的非明文调用方标识。
+     *
+     * @param candidateKey 已通过验证的 API Key
+     * @return 用于限流的认证主体
+     */
+    private String resolveClientPrincipal(String candidateKey) {
+        try {
+            // SHA-256 为 JDK 标准算法，摘要用于区分配额而不是替代 API Key 验证。
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(candidateKey.getBytes(StandardCharsets.UTF_8));
+            return API_KEY_PRINCIPAL + ":" + HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException exception) {
+            // 标准算法不可用属于运行环境错误，不能退回缓存原始凭证。
+            throw new IllegalStateException("SHA-256 digest algorithm is unavailable", exception);
+        }
     }
 
     /**

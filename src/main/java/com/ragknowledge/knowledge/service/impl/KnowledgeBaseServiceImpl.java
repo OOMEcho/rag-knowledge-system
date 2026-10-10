@@ -113,32 +113,44 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         entity.setDescription(request.description());
         entity.setUpdatedAt(LocalDateTime.now());
 
-        // 根据主键更新实体，当前表未启用乐观锁，后续有并发编辑需求再加入 version 字段。
-        knowledgeBaseMapper.updateById(entity);
-        // 返回更新后的实体状态，避免调用方再次查询才能拿到最新字段。
-        return toResponse(entity);
+        // 只写可编辑字段，禁止把查询时的旧计数或 deleted=false 写回，覆盖并发上传或删除的结果。
+        LambdaUpdateWrapper<KnowledgeBaseEntity> updateWrapper = new LambdaUpdateWrapper<KnowledgeBaseEntity>()
+                .eq(KnowledgeBaseEntity::getId, id)
+                .eq(KnowledgeBaseEntity::getDeleted, NOT_DELETED)
+                .set(KnowledgeBaseEntity::getName, normalizedName)
+                .set(KnowledgeBaseEntity::getDescription, request.description())
+                .set(KnowledgeBaseEntity::getUpdatedAt, entity.getUpdatedAt());
+        // 删除发生在读取之后时更新会影响零行，不能返回虚假的编辑成功。
+        if (knowledgeBaseMapper.update(null, updateWrapper) != 1) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "知识库不存在", HttpStatus.NOT_FOUND);
+        }
+        // 精准更新不会覆盖并发文档计数，重新读取确保响应也返回最新计数。
+        return toResponse(findRequiredActiveEntity(id));
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void deleteKnowledgeBase(Long id) {
-        // 删除前读取实体以确认存在性和文档数量，避免直接 update 造成静默无效删除。
-        KnowledgeBaseEntity entity = findRequiredActiveEntity(id);
-
-        // 知识库下仍有文档时禁止删除，避免误删导致后续文档、向量和引用来源失去业务边界。
-        if (entity.getDocumentCount() != null && entity.getDocumentCount() > 0) {
-            throw new BusinessException(ErrorCode.RESOURCE_CONFLICT, "知识库下存在文档，请先删除文档后再删除知识库", HttpStatus.CONFLICT);
+        // 上传持有相同知识库行锁，删除获得锁后才能检查，避免检查为空后又插入新文档。
+        KnowledgeBaseEntity entity = knowledgeBaseMapper.selectActiveForUpdate(id);
+        // 行锁查询等待并发删除提交后会重新检查 deleted，重复删除不能继续执行。
+        if (entity == null) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "知识库不存在", HttpStatus.NOT_FOUND);
         }
 
         // 逻辑删除保留审计历史，后续如需恢复或排查数据问题仍可追踪原始记录。
         LambdaUpdateWrapper<KnowledgeBaseEntity> updateWrapper = new LambdaUpdateWrapper<KnowledgeBaseEntity>()
                 .eq(KnowledgeBaseEntity::getId, id)
                 .eq(KnowledgeBaseEntity::getDeleted, NOT_DELETED)
+                // 以活跃文档实际存在性保护删除，历史计数漂移也不能让非空知识库被删。
+                .notExists("SELECT 1 FROM knowledge_document d WHERE d.knowledge_base_id = knowledge_base.id AND d.deleted = FALSE")
                 .set(KnowledgeBaseEntity::getDeleted, DELETED)
                 .set(KnowledgeBaseEntity::getDeletedAt, LocalDateTime.now())
                 .set(KnowledgeBaseEntity::getUpdatedAt, LocalDateTime.now());
-        // 使用带 deleted 条件的更新，避免重复删除或并发删除覆盖异常状态。
-        knowledgeBaseMapper.update(null, updateWrapper);
+        // 未更新表示仍有活跃文档，事务回滚释放行锁并向调用方返回删除保护错误。
+        if (knowledgeBaseMapper.update(null, updateWrapper) != 1) {
+            throw new BusinessException(ErrorCode.RESOURCE_CONFLICT, "知识库下存在文档，请先删除文档后再删除知识库", HttpStatus.CONFLICT);
+        }
     }
 
     /**

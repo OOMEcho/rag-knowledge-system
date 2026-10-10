@@ -99,6 +99,13 @@ logging:
     com.ragknowledge: INFO
 
 rag:
+  retrieval:
+    default-top-k: ${RAG_DEFAULT_TOP_K:5}
+    max-top-k: ${RAG_MAX_TOP_K:20}
+    default-similarity-threshold: ${RAG_DEFAULT_SIMILARITY_THRESHOLD:0.65}
+    hybrid-enabled: ${RAG_HYBRID_ENABLED:true}
+    rrf-k: ${RAG_RRF_K:60}
+    channel-pool-multiplier: ${RAG_CHANNEL_POOL_MULTIPLIER:2}
   storage:
     local-root: ${RAG_STORAGE_LOCAL_ROOT:data/uploads}
   ingestion:
@@ -154,10 +161,3 @@ management:
 rag:
   security:
     enabled: true
-  retrieval:
-    default-top-k: ${RAG_DEFAULT_TOP_K:5}
-    max-top-k: ${RAG_MAX_TOP_K:20}
-    default-similarity-threshold: ${RAG_DEFAULT_SIMILARITY_THRESHOLD:0.65}
-    hybrid-enabled: ${RAG_HYBRID_ENABLED:true}
-    rrf-k: ${RAG_RRF_K:60}
-    channel-pool-multiplier: ${RAG_CHANNEL_POOL_MULTIPLIER:2}

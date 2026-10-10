@@ -129,6 +129,8 @@ bash scripts/local-smoke-test.sh   # KB → upload → ingest → search/chat
 docker compose --profile app up --build
 ```
 
+Compose forwards authentication, CORS, rate-limit and retrieval settings. For production, set `SPRING_PROFILES_ACTIVE=prod`, `RAG_SECURITY_ENABLED=true` and `RAG_API_KEYS`. Disabling authentication with the production profile fails startup.
+
 On macOS, containers reach the host Ollama via `http://host.docker.internal:11434`.
 
 ## ⚙️ Configuration
@@ -175,7 +177,7 @@ Defaults live in `src/main/resources/application.yml`; all environment variables
 ### 🔒 Security
 
 - **API key auth**: `RAG_SECURITY_ENABLED=true` + `RAG_API_KEYS=key1,key2` (comma-separated, rotatable), submitted via the `X-API-Key` header; enabling auth without keys fails fast at startup; `/actuator/health/**` stays public for probes
-- **Rate limiting**: in-memory token buckets keyed by API key or client IP; RAG endpoints get a stricter quota (they trigger LLM calls); exceeding it returns a unified 429
+- **Rate limiting**: in-memory token buckets keyed by the authenticated key digest or unauthenticated client IP; arbitrary key headers cannot reset quotas. RAG endpoints get a stricter quota. The cache holds at most 10000 buckets, expires entries after 10 idle minutes, and rejects new clients when full. Quota or capacity exhaustion returns 429. Limits apply per application instance
 - **Sanitized failure reasons**: full exceptions go to server logs only; the API returns displayable business messages
 
 ## 🏛️ Architecture
@@ -205,6 +207,8 @@ com.ragknowledge/
 ```
 
 ### Database Design
+
+Both retrieval channels only expose chunks from non-deleted knowledge bases and non-deleted documents in `COMPLETED` status. Vector candidates are revalidated against business records before being used as references.
 
 Business tables are managed by Flyway (`src/main/resources/db/migration`) with soft deletes and partial unique indexes:
 
@@ -266,7 +270,7 @@ curl -sS -X POST http://localhost:8080/api/v1/rag/chat \
   -d '{"knowledgeBaseId":"<kbId>","question":"How soon must employees submit reimbursements?"}'
 ```
 
-Multi-turn: pass `history` in chronological order (max 20 entries); `rewrittenQuestion` in the response shows the rewritten retrieval question:
+Questions are limited to 4096 characters. Multi-turn: pass `history` in chronological order (max 20 non-null entries, up to 8192 characters each); `rewrittenQuestion` in the response shows the rewritten retrieval question:
 
 ```bash
 curl -sS -X POST http://localhost:8080/api/v1/rag/chat \
@@ -301,10 +305,15 @@ springdoc-openapi provides full interactive docs (with an API-key Authorize butt
 # Unit tests (no Docker required)
 mvn test
 
-# With integration tests: Flyway migration validation + retrieval quality regression
+# Database migrations and business concurrency only (Docker required, no Ollama)
+mvn verify -DskipITs=false -Dit.test=PostgresMigrationIT,BusinessConsistencyIT
+
+# With integration tests: migrations + business concurrency + retrieval quality regression
 # (requires Docker; the quality test skips automatically when Ollama is unavailable)
 mvn verify -DskipITs=false
 ```
+
+`BusinessConsistencyIT` uses an isolated pgvector container to check duplicate-delete counters, upload/delete coordination, editable-field boundaries and retrieval visibility. It skips when Docker is unavailable. The GitHub Actions workflow is configured to run unit tests and database integration tests without Ollama. Original files are only removed after the deletion transaction commits.
 
 `RagRetrievalQualityIT` uses a real pgvector container plus local Ollama to verify recall against `src/test/resources/rag/fixtures/rag-eval-cases.json`; add cases by extending that file.
 
@@ -312,11 +321,11 @@ mvn verify -DskipITs=false
 
 ### Production
 
-Production must activate the `prod` profile, which enforces the security baseline: API key auth required (startup fails without keys), Swagger disabled, health details hidden, actuator reduced to `health`.
+Production must activate the `prod` profile, which enforces the security baseline: API key auth required (startup fails without keys or if an environment override disables authentication), Swagger disabled, health details hidden, actuator reduced to `health`.
 
 ```bash
 mvn clean package -DskipTests
-SPRING_PROFILES_ACTIVE=prod RAG_API_KEYS=<strong-random-key> java -jar target/ragknowledge-0.1.0-SNAPSHOT.jar
+SPRING_PROFILES_ACTIVE=prod RAG_SECURITY_ENABLED=true RAG_API_KEYS=<strong-random-key> java -jar target/ragknowledge-0.1.0-SNAPSHOT.jar
 ```
 
 ### Operations Notes
@@ -340,7 +349,7 @@ Change `OLLAMA_EMBEDDING_MODEL` together with `RAG_VECTOR_DIMENSIONS` (the new m
 <details>
 <summary>How do I enable API key authentication?</summary>
 
-Set `RAG_SECURITY_ENABLED=true` and `RAG_API_KEYS=<key1>,<key2>`; clients send the key via the `X-API-Key` header. In production simply use `SPRING_PROFILES_ACTIVE=prod`, which enforces authentication.
+Set `RAG_SECURITY_ENABLED=true` and `RAG_API_KEYS=<key1>,<key2>`; clients send the key via the `X-API-Key` header. In production use `SPRING_PROFILES_ACTIVE=prod` with `RAG_SECURITY_ENABLED=true`; explicitly disabling authentication fails startup.
 </details>
 
 <details>

@@ -43,10 +43,10 @@ public interface KnowledgeDocumentService {
     KnowledgeDocumentResponse getDocument(Long id);
 
     /**
-     * 逻辑删除文档，并尽力删除对应本地原始文件。
+     * 逻辑删除文档及派生数据，提交后尽力清理本地原始文件；事务回滚时保留原文件。
      *
      * @param id 文档 ID
-     * @throws com.ragknowledge.common.exception.BusinessException 当文档不存在或已删除时抛出
+     * @throws com.ragknowledge.common.exception.BusinessException 当文档不存在、已删除或正在入库时抛出
      */
     void deleteDocument(Long id);
 }

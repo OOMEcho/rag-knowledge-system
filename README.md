@@ -129,6 +129,8 @@ bash scripts/local-smoke-test.sh   # 建库 → 上传 → 入库 → 检索问�
 docker compose --profile app up --build
 ```
 
+Compose 会传入认证、CORS、限流和检索配置。生产使用 `SPRING_PROFILES_ACTIVE=prod`，同时设置 `RAG_SECURITY_ENABLED=true` 和 `RAG_API_KEYS`；启用生产 profile 却关闭认证会拒绝启动。
+
 macOS 容器内访问宿主机 Ollama 默认走 `http://host.docker.internal:11434`。
 
 ## ⚙️ 配置说明
@@ -147,7 +149,7 @@ macOS 容器内访问宿主机 Ollama 默认走 `http://host.docker.internal:114
 | `RAG_UPLOAD_MAX_FILE_SIZE` | `50MB` | 上传大小限制 |
 | `RAG_CORS_ALLOWED_ORIGINS` | `http://localhost:5173` | 跨域白名单，前后端分离部署时配置前端域名（逗号分隔） |
 | `RAG_SECURITY_ENABLED` / `RAG_API_KEYS` | `false` / 空 | API Key 认证 |
-| `RAG_RATE_LIMIT_RPM` / `RAG_RATE_LIMIT_RAG_RPM` | `120` / `30` | 每分钟限流（普通 / RAG 接口） |
+| `RAG_RATE_LIMIT_RPM` / `RAG_RATE_LIMIT_RAG_RPM` | `120` / `30` | 每分钟限流（普通 / RAG 接口）；按已认证调用方或未认证来源 IP 计数 |
 | `HTTP_CLIENT_READ_TIMEOUT` | `300s` | Ollama 调用超时（本地大模型生成较慢） |
 
 ## 📦 功能模块
@@ -175,7 +177,7 @@ macOS 容器内访问宿主机 Ollama 默认走 `http://host.docker.internal:114
 ### 🔒 安全特性
 
 - **API Key 认证**: `RAG_SECURITY_ENABLED=true` + `RAG_API_KEYS=key1,key2`（逗号分隔，支持轮换），请求头 `X-API-Key` 提交；开启但未配置 Key 时启动直接失败；`/actuator/health/**` 始终匿名供探针使用
-- **限流**: 内存令牌桶，按 API Key 或来源 IP 计数；RAG 接口触发大模型调用，配额更严；超限返回统一格式 429
+- **限流**: 内存令牌桶，按已认证 Key 的摘要主体或未认证来源 IP 计数，任意填写 Key 不能重置配额；RAG 接口配额更严。缓存最多 10000 个桶，空闲 10 分钟回收，容量满时拒绝新客户端；超限或容量满返回统一格式 429。当前限流仅作用于单实例
 - **失败原因脱敏**: 完整异常只进服务日志，API 只返回可展示的业务消息
 
 ## 🏛️ 系统架构
@@ -213,7 +215,7 @@ com.ragknowledge/
 - `document_chunk` - 分块表（关键词通道直接检索 content）
 - `rag_vector_store` - 向量表（Spring AI 启动时自动创建，1024 维 + HNSW）
 
-知识库隔离双保险：业务表查询强制过滤 `knowledge_base_id`；向量检索强制 metadata filter `knowledgeBaseId`。
+知识库隔离双保险：业务表查询强制过滤 `knowledge_base_id`；向量检索强制 metadata filter `knowledgeBaseId`。两路候选最终都校验知识库、文档与片段未删除，且文档状态为 `COMPLETED`；入库中和失败文档不参与回答。
 
 ## 📡 API
 
@@ -266,7 +268,7 @@ curl -sS -X POST http://localhost:8080/api/v1/rag/chat \
   -d '{"knowledgeBaseId":"<kbId>","question":"员工需要在多久内提交报销？"}'
 ```
 
-多轮对话通过 `history` 传入历史（按时间升序，最多 20 条），响应中 `rewrittenQuestion` 为服务端实际用于检索的改写问题：
+问题最多 4096 个字符。多轮对话通过 `history` 传入历史（按时间升序，最多 20 条，单条最多 8192 个字符且不能为 null），响应中 `rewrittenQuestion` 为服务端实际用于检索的改写问题：
 
 ```bash
 curl -sS -X POST http://localhost:8080/api/v1/rag/chat \
@@ -301,9 +303,14 @@ curl -N -X POST http://localhost:8080/api/v1/rag/chat/stream \
 # 单元测试（不依赖 Docker）
 mvn test
 
-# 含集成测试：Flyway 迁移验证 + 检索质量回归（需 Docker，Ollama 不可用时质量测试自动跳过）
+# 仅数据库迁移和业务并发回归（不需要 Ollama；需要 Docker）
+mvn verify -DskipITs=false -Dit.test=PostgresMigrationIT,BusinessConsistencyIT
+
+# 含集成测试：Flyway 迁移验证 + 业务并发回归 + 检索质量回归（需 Docker，Ollama 不可用时质量测试自动跳过）
 mvn verify -DskipITs=false
 ```
+
+`BusinessConsistencyIT` 使用隔离的 pgvector 容器验证重复删除计数、上传与知识库删除互斥、编辑字段边界和检索可见性；Docker 不可用时该测试跳过。GitHub Actions workflow 配置为执行单元测试及不依赖 Ollama 的数据库集成测试。删除原文件仅在数据库事务提交后执行。
 
 检索质量回归测试 `RagRetrievalQualityIT` 使用真实 pgvector 容器和本地 Ollama，按 `src/test/resources/rag/fixtures/rag-eval-cases.json` 的评估用例验证混合检索召回，新增用例直接扩展该 JSON 文件。
 
@@ -311,11 +318,11 @@ mvn verify -DskipITs=false
 
 ### 生产环境部署
 
-生产必须激活 `prod` profile，它强制执行安全基线：开启 API Key 认证（未配置 Key 启动失败）、关闭 Swagger、健康检查隐藏细节、actuator 仅暴露 `health`。
+生产必须激活 `prod` profile，它强制执行安全基线：开启 API Key 认证（未配置 Key，或环境变量覆盖为关闭认证时启动失败）、关闭 Swagger、健康检查隐藏细节、actuator 仅暴露 `health`。
 
 ```bash
 mvn clean package -DskipTests
-SPRING_PROFILES_ACTIVE=prod RAG_API_KEYS=<强随机Key> java -jar target/ragknowledge-0.1.0-SNAPSHOT.jar
+SPRING_PROFILES_ACTIVE=prod RAG_SECURITY_ENABLED=true RAG_API_KEYS=<强随机Key> java -jar target/ragknowledge-0.1.0-SNAPSHOT.jar
 ```
 
 ### 运维要点
@@ -339,7 +346,7 @@ SPRING_PROFILES_ACTIVE=prod RAG_API_KEYS=<强随机Key> java -jar target/ragknow
 <details>
 <summary>如何开启 API Key 认证？</summary>
 
-设置 `RAG_SECURITY_ENABLED=true` 和 `RAG_API_KEYS=<key1>,<key2>`，调用方通过 `X-API-Key` 请求头提交。生产环境直接使用 `SPRING_PROFILES_ACTIVE=prod`（强制开启认证）。
+设置 `RAG_SECURITY_ENABLED=true` 和 `RAG_API_KEYS=<key1>,<key2>`，调用方通过 `X-API-Key` 请求头提交。生产环境使用 `SPRING_PROFILES_ACTIVE=prod`，并确保 `RAG_SECURITY_ENABLED=true`；显式关闭认证会拒绝启动。
 </details>
 
 <details>

@@ -27,11 +27,13 @@ public record RagChatRequest(
 
         @Schema(description = "用户问题", example = "公司的报销流程是什么？")
         @NotBlank(message = "问题不能为空")
+        // 限制单次问题长度，防止超长输入占用模型与关键词查询资源。
+        @Size(max = 4096, message = "问题最多 4096 个字符")
         String question,
 
         @Schema(description = "多轮对话历史，按时间升序，可选；服务端无状态，由调用方维护并传入")
         @Size(max = 20, message = "对话历史最多 20 条")
-        List<@Valid RagChatMessage> history,
+        List<@NotNull(message = "历史消息不能为空") @Valid RagChatMessage> history,
 
         @Schema(description = "检索返回数量，不传使用默认值", example = "5")
         @Min(value = 1, message = "topK 必须大于 0")

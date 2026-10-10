@@ -7,6 +7,7 @@ import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 
 /**
  * RAG 检索请求
@@ -23,6 +24,8 @@ public record RagSearchRequest(
 
         @Schema(description = "检索问题", example = "公司的报销流程是什么？")
         @NotBlank(message = "问题不能为空")
+        // 限制单次问题长度，防止超长输入占用模型与关键词查询资源。
+        @Size(max = 4096, message = "问题最多 4096 个字符")
         String question,
 
         @Schema(description = "返回数量，不传使用默认值", example = "5")

@@ -328,7 +328,7 @@ public class RagServiceImpl implements RagService {
         // 混合检索器负责向量与关键词双通道召回和 RRF 融合。
         List<RetrievedChunk> retrievedChunks = hybridChunkRetriever.retrieve(knowledgeBaseId, query, topK, similarityThreshold);
         // 根据 chunkId 批量查询活跃 chunk，过滤掉已删除或异常残留数据。
-        Map<Long, DocumentChunkEntity> activeChunkMap = loadActiveChunkMap(retrievedChunks);
+        Map<Long, DocumentChunkEntity> activeChunkMap = loadActiveChunkMap(knowledgeBaseId, retrievedChunks);
         List<RagReferenceResponse> references = new ArrayList<>(retrievedChunks.size());
 
         // 按融合排序生成引用，保证 [1]、[2] 编号与 Prompt 上下文顺序一致。
@@ -349,20 +349,19 @@ public class RagServiceImpl implements RagService {
     /**
      * 批量加载活跃 chunk 映射。
      *
+     * @param knowledgeBaseId 知识库 ID，必须同时约束业务查询与向量 metadata filter
      * @param retrievedChunks 检索结果
      * @return chunkId 到 chunk 实体的映射
      */
-    private Map<Long, DocumentChunkEntity> loadActiveChunkMap(List<RetrievedChunk> retrievedChunks) {
+    private Map<Long, DocumentChunkEntity> loadActiveChunkMap(Long knowledgeBaseId, List<RetrievedChunk> retrievedChunks) {
         // 空结果无需访问数据库，直接返回空映射。
         if (retrievedChunks.isEmpty()) {
             return Map.of();
         }
 
         List<Long> chunkIds = retrievedChunks.stream().map(RetrievedChunk::chunkId).toList();
-        // 只查询未删除 chunk，避免 pgvector 或关键词通道残留数据绕过业务删除状态。
-        List<DocumentChunkEntity> activeChunks = documentChunkMapper.selectList(new LambdaQueryWrapper<DocumentChunkEntity>()
-                .in(DocumentChunkEntity::getId, chunkIds)
-                .eq(DocumentChunkEntity::getDeleted, NOT_DELETED));
+        // 两路候选都回查文档完成状态和知识库归属，半成品向量或异常 metadata 不能绕过业务边界。
+        List<DocumentChunkEntity> activeChunks = documentChunkMapper.selectRetrievableChunks(knowledgeBaseId, chunkIds);
         Map<Long, DocumentChunkEntity> activeChunkMap = new HashMap<>();
 
         // 手动构建 map，避免异常重复数据时 Collectors.toMap 抛异常影响检索结果。

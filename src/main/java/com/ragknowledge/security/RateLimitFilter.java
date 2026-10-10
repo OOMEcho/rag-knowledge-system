@@ -10,18 +10,22 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
-import org.springframework.util.StringUtils;
+import org.springframework.security.authentication.AnonymousAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.LinkedHashMap;
+import java.util.function.LongSupplier;
 
 /**
  * 请求限流过滤器，基于 bucket4j 内存令牌桶按客户端限制业务 API 频率
@@ -36,16 +40,33 @@ public class RateLimitFilter extends OncePerRequestFilter {
     private static final String API_PATH_PREFIX = "/api/";
     private static final String RAG_PATH_PREFIX = "/api/v1/rag/";
 
-    // 桶按客户端标识缓存在内存中，单实例部署有效；多实例部署需替换为 Redis 等分布式实现。
-    private final Map<String, Bucket> generalBuckets = new ConcurrentHashMap<>();
-    private final Map<String, Bucket> ragBuckets = new ConcurrentHashMap<>();
+    private static final int MAX_CACHED_BUCKETS = 10000;
+    // 空闲十分钟已远超一分钟的补充周期，过期重建不会额外放宽配额。
+    private static final long BUCKET_IDLE_TIMEOUT_NANOS = Duration.ofMinutes(10).toNanos();
+    // 按访问顺序仅扫描最旧条目；容量耗尽时拒绝新标识，不能驱逐有效桶使攻击者重置配额。
+    private final Map<String, ClientBucket> buckets = new LinkedHashMap<>(16, 0.75f, true);
+    private final LongSupplier ticker;
 
     private final SecurityProperties securityProperties;
     private final ObjectMapper objectMapper;
 
+    @Autowired
     public RateLimitFilter(SecurityProperties securityProperties, ObjectMapper objectMapper) {
+        // 单调时间避免系统时钟调整影响桶的空闲过期判断。
+        this(securityProperties, objectMapper, System::nanoTime);
+    }
+
+    /**
+     * 使用可控单调时钟构造过滤器，便于验证空闲过期而无需真实等待。
+     *
+     * @param securityProperties 限流与认证配置
+     * @param objectMapper 错误响应序列化器
+     * @param ticker 单调纳秒时钟
+     */
+    RateLimitFilter(SecurityProperties securityProperties, ObjectMapper objectMapper, LongSupplier ticker) {
         this.securityProperties = securityProperties;
         this.objectMapper = objectMapper;
+        this.ticker = ticker;
     }
 
     @Override
@@ -64,12 +85,10 @@ public class RateLimitFilter extends OncePerRequestFilter {
         // 客户端标识优先使用 API Key（可精确到调用方），未认证场景退化为来源 IP。
         String clientKey = resolveClientKey(request);
         // RAG 端点触发 embedding 和大模型调用，成本高，使用独立且更严格的配额。
-        Bucket bucket = requestPath.startsWith(RAG_PATH_PREFIX)
-                ? ragBuckets.computeIfAbsent(clientKey, key -> newBucket(securityProperties.getRateLimit().getRagRequestsPerMinute()))
-                : generalBuckets.computeIfAbsent(clientKey, key -> newBucket(securityProperties.getRateLimit().getRequestsPerMinute()));
+        Bucket bucket = resolveBucket(clientKey, requestPath.startsWith(RAG_PATH_PREFIX));
 
-        // 令牌不足说明该客户端超过配额，直接返回 429，不再进入业务处理。
-        if (!bucket.tryConsume(1)) {
+        // 配额耗尽或缓存容量已满时返回 429，防止模型负载或客户端标识耗尽内存。
+        if (bucket == null || !bucket.tryConsume(1)) {
             writeRateLimitedResponse(response);
             return;
         }
@@ -84,15 +103,61 @@ public class RateLimitFilter extends OncePerRequestFilter {
      * @return 客户端标识
      */
     private String resolveClientKey(HttpServletRequest request) {
-        // 携带 API Key 时按 Key 限流，同一调用方无论来源 IP 如何变化共享同一配额。
-        String apiKey = request.getHeader(securityProperties.getHeaderName());
-
-        if (StringUtils.hasText(apiKey)) {
-            return "key:" + apiKey;
+        // 仅信任安全过滤链验证后的主体，未认证请求随意变换 Key 不能获得新配额。
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (securityProperties.isEnabled() && authentication != null && authentication.isAuthenticated()
+                && !(authentication instanceof AnonymousAuthenticationToken)) {
+            return "client:" + authentication.getName();
         }
 
-        // 未携带 Key 时按来源 IP 限流；直连场景下 remoteAddr 可信，经代理部署时需配置 forward-headers。
+        // 未认证请求始终按来源 IP 限流；经代理部署时需由可信代理配置 forward-headers。
         return "ip:" + request.getRemoteAddr();
+    }
+
+    /**
+     * 获取客户端桶并回收空闲条目；满容量时拒绝新增桶以保持内存与配额边界。
+     *
+     * @param clientKey 可信调用方或来源 IP
+     * @param ragRequest 是否使用 RAG 配额
+     * @return 令牌桶；缓存满且客户端未登记时返回 null
+     */
+    private synchronized Bucket resolveBucket(String clientKey, boolean ragRequest) {
+        // 访问顺序与最后访问时间一致，只需清理开头的过期条目，避免每个请求遍历全量缓存。
+        long now = ticker.getAsLong();
+        var iterator = buckets.values().iterator();
+        while (iterator.hasNext()) {
+            ClientBucket entry = iterator.next();
+            // 后续条目更新得更晚，首个未过期条目意味着本轮清理已经完成。
+            if (now - entry.lastAccessNanos() < BUCKET_IDLE_TIMEOUT_NANOS) {
+                break;
+            }
+            iterator.remove();
+        }
+        // 两种接口拥有独立配额，但共同受缓存容量限制。
+        String cacheKey = (ragRequest ? "rag:" : "general:") + clientKey;
+        ClientBucket entry = buckets.get(cacheKey);
+        if (entry == null) {
+            // 不驱逐仍有效的桶，否则大量新客户端可迫使旧客户端配额重置。
+            if (buckets.size() >= MAX_CACHED_BUCKETS) {
+                return null;
+            }
+            int requestsPerMinute = ragRequest ? securityProperties.getRateLimit().getRagRequestsPerMinute()
+                    : securityProperties.getRateLimit().getRequestsPerMinute();
+            // 新客户端按所属接口配置创建桶；缓存中只保存摘要主体或 IP。
+            entry = new ClientBucket(newBucket(requestsPerMinute), now);
+        }
+        // 每次访问都更新空闲时间，活跃客户端不能通过耗尽配额后等待清理短路限流。
+        buckets.put(cacheKey, new ClientBucket(entry.bucket(), now));
+        return entry.bucket();
+    }
+
+    /**
+     * 客户端配额及最近访问时间，用于有界缓存的空闲回收。
+     *
+     * @author xuesong.lei
+     * @since 2026-10-10
+     */
+    private record ClientBucket(Bucket bucket, long lastAccessNanos) {
     }
 
     /**

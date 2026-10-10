@@ -5,6 +5,8 @@ import com.ragknowledge.security.ApiKeyAuthenticationFilter;
 import com.ragknowledge.security.RestAuthenticationEntryPoint;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -37,7 +39,15 @@ public class SecurityConfig {
     }
 
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http, ObjectMapper objectMapper) throws Exception {
+    public SecurityFilterChain securityFilterChain(HttpSecurity http, ObjectMapper objectMapper, Environment environment) throws Exception {
+        // prod 的安全要求不能被更高优先级的环境变量绕过；错误配置必须在放行分支前拒绝启动。
+        if (environment.acceptsProfiles(Profiles.of("prod")) && !securityProperties.isEnabled()) {
+            throw new IllegalStateException("prod 环境禁止关闭 API Key 认证，请移除 RAG_SECURITY_ENABLED=false");
+        }
+        // 凭证缺失同样必须在构建过滤链前失败，避免生产配置带着不可用认证启动。
+        if (securityProperties.isEnabled()) {
+            ensureApiKeysConfigured();
+        }
         // 纯 REST API 不使用 Cookie 会话，关闭 CSRF 并保持无状态，避免容器创建 HttpSession。
         // CORS 无论认证是否开启都需要生效：前后端分离部署时浏览器跨域访问依赖预检响应头。
         http.csrf(csrf -> csrf.disable())
@@ -49,9 +59,6 @@ public class SecurityConfig {
             http.authorizeHttpRequests(authorize -> authorize.anyRequest().permitAll());
             return http.build();
         }
-
-        // 开启认证但未配置任何有效 Key 时快速失败，防止误以为已受保护实际全部请求都会被拒绝。
-        ensureApiKeysConfigured();
 
         http.authorizeHttpRequests(authorize -> authorize
                         // 健康检查端点必须匿名可用，容器编排和负载均衡探针不会携带 API Key。

@@ -28,13 +28,32 @@ public interface DocumentChunkMapper extends BaseMapper<DocumentChunkEntity> {
      * @param limit           返回数量上限
      * @return 按词相似度降序的 chunk ID 与分数列表，分数为 0 的无关结果已过滤
      */
-    @Select("SELECT id, word_similarity(#{query}, content) AS score "
-            + "FROM document_chunk "
-            + "WHERE knowledge_base_id = #{knowledgeBaseId} AND deleted = FALSE "
-            + "AND word_similarity(#{query}, content) > 0 "
-            + "ORDER BY score DESC, id ASC "
+    // chunk 在向量化前就已写入，仅完成入库且未删除的文档可以对外提供检索上下文。
+    @Select("SELECT c.id, word_similarity(#{query}, c.content) AS score "
+            + "FROM document_chunk c JOIN knowledge_document d ON d.id = c.document_id AND d.knowledge_base_id = c.knowledge_base_id "
+            + "JOIN knowledge_base k ON k.id = c.knowledge_base_id "
+            + "WHERE c.knowledge_base_id = #{knowledgeBaseId} AND c.deleted = FALSE "
+            + "AND d.deleted = FALSE AND d.status = 'COMPLETED' AND k.deleted = FALSE "
+            + "AND word_similarity(#{query}, c.content) > 0 "
+            + "ORDER BY score DESC, c.id ASC "
             + "LIMIT #{limit}")
     List<ChunkKeywordScore> selectKeywordScores(@Param("knowledgeBaseId") Long knowledgeBaseId,
                                                 @Param("query") String query,
                                                 @Param("limit") int limit);
+
+    /**
+     * 加载指定知识库中可引用的片段，统一过滤未完成文档、已删除文档和跨库异常记录。
+     *
+     * @param knowledgeBaseId 知识库 ID
+     * @param chunkIds 非空候选片段 ID 列表
+     * @return 来自活跃知识库和已完成文档的活跃片段
+     */
+    @Select("<script>SELECT c.* FROM document_chunk c "
+            + "JOIN knowledge_document d ON d.id = c.document_id AND d.knowledge_base_id = c.knowledge_base_id "
+            + "JOIN knowledge_base k ON k.id = c.knowledge_base_id "
+            + "WHERE c.knowledge_base_id = #{knowledgeBaseId} AND c.deleted = FALSE "
+            + "AND d.deleted = FALSE AND d.status = 'COMPLETED' AND k.deleted = FALSE "
+            + "AND c.id IN <foreach collection='chunkIds' item='id' open='(' separator=',' close=')'>#{id}</foreach></script>")
+    List<DocumentChunkEntity> selectRetrievableChunks(@Param("knowledgeBaseId") Long knowledgeBaseId,
+                                                     @Param("chunkIds") List<Long> chunkIds);
 }

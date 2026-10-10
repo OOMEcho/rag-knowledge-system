@@ -1,0 +1,23 @@
+name: Build and test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      # Database tests use isolated pgvector containers; retrieval quality tests need a local Ollama installation.
+      - name: Build, unit tests and database integration tests
+        run: mvn --batch-mode verify -DskipITs=false -Dit.test=PostgresMigrationIT,BusinessConsistencyIT
