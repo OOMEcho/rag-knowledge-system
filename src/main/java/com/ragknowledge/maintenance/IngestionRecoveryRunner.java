@@ -6,10 +6,13 @@ import com.ragknowledge.document.entity.DocumentStatus;
 import com.ragknowledge.document.entity.KnowledgeDocumentEntity;
 import com.ragknowledge.document.mapper.KnowledgeDocumentMapper;
 import com.ragknowledge.document.service.impl.DocumentVectorCleanupService;
+import com.ragknowledge.config.ingestion.IngestionStartupGuard;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.context.event.ApplicationReadyEvent;
-import org.springframework.context.event.EventListener;
+import org.springframework.boot.ApplicationArguments;
+import org.springframework.boot.ApplicationRunner;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
@@ -23,7 +26,8 @@ import java.util.Set;
  * @since 2026-07-03
  */
 @Component
-public class IngestionRecoveryRunner {
+@Order(Ordered.HIGHEST_PRECEDENCE)
+public class IngestionRecoveryRunner implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(IngestionRecoveryRunner.class);
     private static final boolean NOT_DELETED = false;
@@ -32,11 +36,22 @@ public class IngestionRecoveryRunner {
 
     private final KnowledgeDocumentMapper knowledgeDocumentMapper;
     private final DocumentVectorCleanupService documentVectorCleanupService;
+    private final IngestionStartupGuard startupGuard;
 
     public IngestionRecoveryRunner(KnowledgeDocumentMapper knowledgeDocumentMapper,
-                                   DocumentVectorCleanupService documentVectorCleanupService) {
+                                   DocumentVectorCleanupService documentVectorCleanupService,
+                                   IngestionStartupGuard startupGuard) {
         this.knowledgeDocumentMapper = knowledgeDocumentMapper;
         this.documentVectorCleanupService = documentVectorCleanupService;
+        this.startupGuard = startupGuard;
+    }
+
+    @Override
+    public void run(ApplicationArguments args) {
+        // Runner 在发布就绪事件前执行；门禁同时保护此时已监听端口的新入库请求。
+        recoverInterruptedIngestions();
+        // 仅全部恢复成功后开放请求；异常会使启动失败，不能带未完成恢复的状态提供服务。
+        startupGuard.markRecoveryCompleted();
     }
 
     /**
@@ -44,9 +59,8 @@ public class IngestionRecoveryRunner {
      * 残留在 PARSING/EMBEDDING 的文档没有任何线程继续处理，必须标记为 FAILED
      * 才能通过重试入口恢复，否则会永久卡在处理中状态。
      */
-    @EventListener(ApplicationReadyEvent.class)
-    public void recoverInterruptedIngestions() {
-        // 查询所有停留在处理中状态的未删除文档，它们的执行线程已随上次进程终止而消失。
+    private void recoverInterruptedIngestions() {
+        // 仅支持单实例：新请求被门禁阻挡，因此处理中记录只能属于上次退出的进程。
         List<KnowledgeDocumentEntity> staleDocuments = knowledgeDocumentMapper.selectList(new LambdaQueryWrapper<KnowledgeDocumentEntity>()
                 .eq(KnowledgeDocumentEntity::getDeleted, NOT_DELETED)
                 .in(KnowledgeDocumentEntity::getStatus, PROCESSING_STATUSES));
@@ -71,7 +85,7 @@ public class IngestionRecoveryRunner {
      * @param documentId 文档 ID
      */
     private void markDocumentInterrupted(Long documentId) {
-        // 条件更新仍限定处理中状态，避免恢复流程覆盖启动瞬间刚被用户重新触发的任务。
+        // 只更新处理中记录，正常完成和已删除文档必须保持原状；新入库由门禁阻挡。
         LambdaUpdateWrapper<KnowledgeDocumentEntity> updateWrapper = new LambdaUpdateWrapper<KnowledgeDocumentEntity>()
                 .eq(KnowledgeDocumentEntity::getId, documentId)
                 .eq(KnowledgeDocumentEntity::getDeleted, NOT_DELETED)

@@ -4,6 +4,8 @@ import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.ragknowledge.common.exception.BusinessException;
 import com.ragknowledge.config.ingestion.IngestionProperties;
+import com.ragknowledge.config.ingestion.IngestionStartupGuard;
+import com.ragknowledge.maintenance.IngestionRecoveryRunner;
 import com.ragknowledge.document.mapper.*;
 import com.ragknowledge.document.service.KnowledgeDocumentService;
 import com.ragknowledge.document.service.DocumentIngestionService;
@@ -60,6 +62,29 @@ class BusinessConsistencyIT {
     @Autowired private KnowledgeBaseService bases;
     @Autowired private DocumentIngestionService ingestion;
     @Autowired private DocumentChunkMapper chunks;
+    @Autowired private KnowledgeDocumentMapper documentMapper;
+    @Autowired private DocumentVectorCleanupService cleanup;
+
+    @Test
+    void startupRecoveryShouldCleanInterruptedDataAndAllowRetry() {
+        // 构造上次进程留下的半成品，以及不应被恢复流程修改的完成文档。
+        insertBase(107L, 2);
+        insertDocument(1071L, 107L, "EMBEDDING");
+        insertDocument(1072L, 107L, "COMPLETED");
+        jdbc.update("INSERT INTO document_chunk(id,document_id,knowledge_base_id,chunk_index,content,vector_document_id) VALUES(1071,1071,107,0,'partial','1071')");
+        var guard = new IngestionStartupGuard();
+        var service = new DocumentIngestionServiceImpl(documentMapper, chunks, mock(DocumentStorageService.class), cleanup,
+                mock(VectorStore.class), new ObjectMapper(), new IngestionProperties(), task -> {}, guard);
+        // 恢复前入口必须拒绝，且不能把残留记录抢占为新任务。
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.ingestDocument(1071L))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("正在恢复");
+        new IngestionRecoveryRunner(documentMapper, cleanup, guard).run(null);
+        assertThat(jdbc.queryForObject("SELECT status FROM knowledge_document WHERE id=1071", String.class)).isEqualTo("FAILED");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM document_chunk WHERE document_id=1071 AND deleted=FALSE", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT status FROM knowledge_document WHERE id=1072", String.class)).isEqualTo("COMPLETED");
+        // 恢复完成后重试可抢占，后台任务仍使用队列替身，避免依赖 Ollama。
+        assertThat(service.retryFailedDocument(1071L).status()).isEqualTo("PARSING");
+    }
 
     @Test
     void concurrentDeletionShouldDecrementExactlyOnce() throws Exception {
@@ -268,8 +293,11 @@ class BusinessConsistencyIT {
         /** 保留真实入库抢占，将耗时后台任务留在队列替身中，避免依赖 Ollama。 */
         @Bean
         DocumentIngestionService ingestion(KnowledgeDocumentMapper documents, DocumentChunkMapper chunks, DocumentVectorCleanupService cleanup) {
+            // 此精简数据库上下文没有 Boot Runner，明确模拟启动恢复已经完成。
+            var guard = new IngestionStartupGuard();
+            guard.markRecoveryCompleted();
             return new DocumentIngestionServiceImpl(documents, chunks, mock(DocumentStorageService.class), cleanup,
-                    mock(VectorStore.class), new ObjectMapper(), new IngestionProperties(), task -> {});
+                    mock(VectorStore.class), new ObjectMapper(), new IngestionProperties(), task -> {}, guard);
         }
 
         /** 装配文档服务并模拟已保存文件，实际数据库写入与锁全部保留。 */

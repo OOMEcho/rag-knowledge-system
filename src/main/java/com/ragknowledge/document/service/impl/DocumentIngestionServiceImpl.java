@@ -10,6 +10,7 @@ import com.ragknowledge.common.exception.BusinessException;
 import com.ragknowledge.common.response.ErrorCode;
 import com.ragknowledge.common.response.PageResponse;
 import com.ragknowledge.config.ingestion.IngestionProperties;
+import com.ragknowledge.config.ingestion.IngestionStartupGuard;
 import com.ragknowledge.document.dto.DocumentChunkResponse;
 import com.ragknowledge.document.dto.KnowledgeDocumentResponse;
 import com.ragknowledge.document.entity.DocumentChunkEntity;
@@ -67,6 +68,7 @@ public class DocumentIngestionServiceImpl implements DocumentIngestionService {
     private final ObjectMapper objectMapper;
     private final IngestionProperties ingestionProperties;
     private final TaskExecutor ingestionTaskExecutor;
+    private final IngestionStartupGuard startupGuard;
 
     public DocumentIngestionServiceImpl(KnowledgeDocumentMapper knowledgeDocumentMapper,
                                         DocumentChunkMapper documentChunkMapper,
@@ -75,7 +77,8 @@ public class DocumentIngestionServiceImpl implements DocumentIngestionService {
                                         VectorStore vectorStore,
                                         ObjectMapper objectMapper,
                                         IngestionProperties ingestionProperties,
-                                        @Qualifier("ingestionTaskExecutor") TaskExecutor ingestionTaskExecutor) {
+                                        @Qualifier("ingestionTaskExecutor") TaskExecutor ingestionTaskExecutor,
+                                        IngestionStartupGuard startupGuard) {
         this.knowledgeDocumentMapper = knowledgeDocumentMapper;
         this.documentChunkMapper = documentChunkMapper;
         this.documentStorageService = documentStorageService;
@@ -84,10 +87,13 @@ public class DocumentIngestionServiceImpl implements DocumentIngestionService {
         this.objectMapper = objectMapper;
         this.ingestionProperties = ingestionProperties;
         this.ingestionTaskExecutor = ingestionTaskExecutor;
+        this.startupGuard = startupGuard;
     }
 
     @Override
     public KnowledgeDocumentResponse ingestDocument(Long documentId) {
+        // 启动恢复会清理残留派生数据，恢复完成前不得抢占任何新任务。
+        startupGuard.ensureReadyForIngestion();
         // 入库前必须读取最新文档状态，避免对已删除文档触发长耗时任务。
         KnowledgeDocumentEntity document = findRequiredActiveDocument(documentId);
         // 通过条件更新原子抢占 PARSING 状态并立即提交，是并发防重入的唯一有效手段：
@@ -159,6 +165,8 @@ public class DocumentIngestionServiceImpl implements DocumentIngestionService {
 
     @Override
     public KnowledgeDocumentResponse retryFailedDocument(Long documentId) {
+        // 重试入口同样受启动门禁保护，不能在残留清理期间读取旧状态后启动任务。
+        startupGuard.ensureReadyForIngestion();
         // 重试前先读取文档状态，明确该恢复入口只处理 FAILED 文档。
         KnowledgeDocumentEntity document = findRequiredActiveDocument(documentId);
         // 状态校验用于防止用户误把已完成或正在处理的文档通过恢复入口重复入库。

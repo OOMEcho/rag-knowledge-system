@@ -18,7 +18,7 @@ public interface DocumentIngestionService {
      *
      * @param documentId 文档 ID
      * @return 抢占成功后的文档元数据，状态为 PARSING；终态 COMPLETED/FAILED 通过文档详情查询
-     * @throws com.ragknowledge.common.exception.BusinessException 当文档不存在、已删除、正在入库处理中或任务队列已满时抛出
+     * @throws com.ragknowledge.common.exception.BusinessException 当启动恢复未完成（503）、文档不存在、已删除、正在入库处理中或任务队列已满时抛出
      */
     KnowledgeDocumentResponse ingestDocument(Long documentId);
 
@@ -28,7 +28,7 @@ public interface DocumentIngestionService {
      *
      * @param documentId 文档 ID
      * @return 抢占成功后的文档元数据，状态为 PARSING；终态通过文档详情查询
-     * @throws com.ragknowledge.common.exception.BusinessException 当文档不存在、已删除或当前状态不是 FAILED 时抛出
+     * @throws com.ragknowledge.common.exception.BusinessException 当启动恢复未完成（503）、文档不存在、已删除或当前状态不是 FAILED 时抛出
      */
     KnowledgeDocumentResponse retryFailedDocument(Long documentId);
 

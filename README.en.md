@@ -208,7 +208,7 @@ com.ragknowledge/
 
 ### Database Design
 
-Both retrieval channels only expose chunks from non-deleted knowledge bases and non-deleted documents in `COMPLETED` status. Vector candidates are revalidated against business records before being used as references.
+Both retrieval channels only expose chunks from non-deleted knowledge bases and non-deleted documents in `COMPLETED` status. Vector candidates are revalidated against business records before being used as references. Validate the bounded candidate pool before selecting the final topK, so invalid chunks do not consume reference slots. Fewer results are allowed when the pool is exhausted; queries are not expanded indefinitely.
 
 Business tables are managed by Flyway (`src/main/resources/db/migration`) with soft deletes and partial unique indexes:
 
@@ -315,7 +315,11 @@ mvn verify -DskipITs=false
 
 `BusinessConsistencyIT` uses an isolated pgvector container to check duplicate-delete counters, upload/delete coordination, editable-field boundaries and retrieval visibility. It skips when Docker is unavailable. The GitHub Actions workflow is configured to run unit tests and database integration tests without Ollama. Original files are only removed after the deletion transaction commits.
 
-`RagRetrievalQualityIT` uses a real pgvector container plus local Ollama to verify recall against `src/test/resources/rag/fixtures/rag-eval-cases.json`; add cases by extending that file.
+`RagRetrievalQualityIT` uses an isolated pgvector container, temporary uploads and real Ollama models. The finance knowledge base contains seven policies, including four distractors, alongside separate IT and empty knowledge bases, so retrieving every document in a tiny corpus does not produce a misleading pass. Its 25 fictional company-policy cases cover paraphrases, amount boundaries, similar policies, unanswerable questions, knowledge-base isolation and follow-up rewriting. It uses application-default retrieval parameters and checks source recall separately from answer conclusions. Per-case results are written to `target/rag-evaluation-report.json`, including execution/pass counts, failure stages, sources and latency. Missing Docker or Ollama is explicitly skipped and does not count as a quality pass; missing models or failed real requests are errors.
+
+On memory-constrained machines, explicitly configure the chat context, for example: `SPRING_AI_OLLAMA_CHAT_OPTIONS_NUM_CTX=8192 mvn verify -DskipITs=false -Dit.test=RagRetrievalQualityIT`. This does not change the model or retrieval parameters, but limits long-conversation capacity. The report records `chatContextWindow` (0 means the model default); small-window results are not evidence of default large-window performance.
+
+Automated assertions check basic conclusions, citation numbers and refusal signals; they do not prove that every sentence is supported. Human review of answers and sources remains necessary. Extend `src/test/resources/rag/fixtures/rag-eval-cases.json` with accurate expected sources and approval rules, without weakening criteria to obtain a pass.
 
 ## 📚 Deployment
 
@@ -327,6 +331,10 @@ Production must activate the `prod` profile, which enforces the security baselin
 mvn clean package -DskipTests
 SPRING_PROFILES_ACTIVE=prod RAG_SECURITY_ENABLED=true RAG_API_KEYS=<strong-random-key> java -jar target/ragknowledge-0.1.0-SNAPSHOT.jar
 ```
+
+### Deployment Boundary
+
+Only one backend instance may use the same business database and upload directory. Overlapping restarts and multiple replicas sharing ingestion tasks are unsupported; ensure the old process has exited before starting another. Recovery runs before readiness is published. Until recovery completes, `ingest` and `retry-ingestion` return HTTP 503 (`BUSINESS_ERROR`, ingestion recovery in progress) without claiming a task. Interrupted `PARSING/EMBEDDING` documents are cleaned and marked `FAILED`; retries become available after recovery succeeds. Database recovery errors fail startup. This guard is not a distributed lock and does not coordinate multiple instances.
 
 ### Operations Notes
 

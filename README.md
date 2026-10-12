@@ -215,7 +215,7 @@ com.ragknowledge/
 - `document_chunk` - 分块表（关键词通道直接检索 content）
 - `rag_vector_store` - 向量表（Spring AI 启动时自动创建，1024 维 + HNSW）
 
-知识库隔离双保险：业务表查询强制过滤 `knowledge_base_id`；向量检索强制 metadata filter `knowledgeBaseId`。两路候选最终都校验知识库、文档与片段未删除，且文档状态为 `COMPLETED`；入库中和失败文档不参与回答。
+知识库隔离双保险：业务表查询强制过滤 `knowledge_base_id`；向量检索强制 metadata filter `knowledgeBaseId`。两路候选最终都校验知识库、文档与片段未删除，且文档状态为 `COMPLETED`；入库中和失败文档不参与回答。先校验有界候选池，再选择最终 topK，失效片段不占引用名额；候选池耗尽时允许返回少于 topK，不无限扩大查询。
 
 ## 📡 API
 
@@ -312,7 +312,11 @@ mvn verify -DskipITs=false
 
 `BusinessConsistencyIT` 使用隔离的 pgvector 容器验证重复删除计数、上传与知识库删除互斥、编辑字段边界和检索可见性；Docker 不可用时该测试跳过。GitHub Actions workflow 配置为执行单元测试及不依赖 Ollama 的数据库集成测试。删除原文件仅在数据库事务提交后执行。
 
-检索质量回归测试 `RagRetrievalQualityIT` 使用真实 pgvector 容器和本地 Ollama，按 `src/test/resources/rag/fixtures/rag-eval-cases.json` 的评估用例验证混合检索召回，新增用例直接扩展该 JSON 文件。
+质量回归测试 `RagRetrievalQualityIT` 使用隔离 pgvector 容器、临时上传目录和真实 Ollama。财务知识库含 7 份制度（包括 4 份干扰文档），另有独立信息安全库和空库，避免少量文档全召回造成虚假通过。25 个虚构企业制度用例覆盖同义问法、金额边界、相似制度、无答案、跨库隔离和多轮追问；使用应用默认检索参数，分别检查预期来源召回和回答关键结论。逐题结果输出到 `target/rag-evaluation-report.json`，包含执行数、通过数、失败阶段、来源与耗时。无 Docker 或无 Ollama 时明确跳过，不能算作质量通过；模型缺失或真实请求失败会报错。
+
+在内存有限的本机可以显式配置聊天上下文，例如 `SPRING_AI_OLLAMA_CHAT_OPTIONS_NUM_CTX=8192 mvn verify -DskipITs=false -Dit.test=RagRetrievalQualityIT`。这不更换模型或检索参数，但会限制长对话容量；报告中的 `chatContextWindow` 记录本次配置（0 表示沿用模型默认值），不能把小窗口结果当作默认大窗口的性能证明。
+
+自动断言只检查基本结论、引用编号和拒答信号，不能证明每一句回答均有证据，正式验收还需人工核对来源与回答。新增用例扩展 `src/test/resources/rag/fixtures/rag-eval-cases.json`，应保持预期来源和审批口径准确，不能为了通过测试放宽标准。
 
 ## 📚 部署
 
@@ -324,6 +328,10 @@ mvn verify -DskipITs=false
 mvn clean package -DskipTests
 SPRING_PROFILES_ACTIVE=prod RAG_SECURITY_ENABLED=true RAG_API_KEYS=<强随机Key> java -jar target/ragknowledge-0.1.0-SNAPSHOT.jar
 ```
+
+### 部署边界
+
+当前仅支持一个后端实例独占同一业务数据库与上传目录，不支持滚动重叠启动或多副本共享入库任务。重启时必须先确认旧进程已经退出。启动恢复在发布就绪事件前执行；恢复完成前，`ingest` 和 `retry-ingestion` 返回 HTTP 503（`BUSINESS_ERROR`，服务正在恢复入库任务），不抢占新任务。残留 `PARSING/EMBEDDING` 文档清理后置为 `FAILED`，恢复成功后开放重试；恢复数据库操作异常会导致启动失败。此门禁不是分布式锁，不能用于多实例任务协调。
 
 ### 运维要点
 

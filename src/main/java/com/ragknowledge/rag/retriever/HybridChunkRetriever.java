@@ -37,13 +37,14 @@ public class HybridChunkRetriever {
 
     /**
      * 在指定知识库内执行混合检索：向量语义通道与 pg_trgm 关键词通道分别召回候选，
-     * 再按 Reciprocal Rank Fusion 融合排序取 topK。混合检索关闭时退化为纯向量检索。
+     * 再按 Reciprocal Rank Fusion 返回有界候选池；调用方校验业务可见性后取最终 topK。
+     * 混合检索关闭时退化为纯向量候选池。
      *
      * @param knowledgeBaseId     知识库 ID
      * @param query               检索文本
-     * @param topK                最终返回数量
+     * @param topK                目标返回数量，用于计算候选池大小
      * @param similarityThreshold 向量通道相似度阈值，不作用于关键词通道
-     * @return 按融合分数降序的检索结果
+     * @return 按分数降序的候选结果，最多两路候选池大小之和，可能超过 topK
      */
     public List<RetrievedChunk> retrieve(Long knowledgeBaseId, String query, int topK, double similarityThreshold) {
         // 每个通道召回超过 topK 的候选池，让融合阶段有互补空间。
@@ -51,15 +52,15 @@ public class HybridChunkRetriever {
         // 向量通道始终执行，语义召回是 RAG 检索的主通道。
         List<Document> vectorDocuments = searchVectorChannel(knowledgeBaseId, query, poolSize, similarityThreshold);
 
-        // 混合检索关闭时直接按向量顺序返回，保持与历史纯向量行为一致。
+        // 纯向量模式也保留全部有界候选，失效片段不能提前占用最终名额。
         if (!retrievalProperties.isHybridEnabled()) {
-            return toVectorOnlyResults(vectorDocuments, topK);
+            return toVectorOnlyResults(vectorDocuments);
         }
 
         // 关键词通道用 trigram 词相似度召回，补充精确术语、编号等字面匹配。
         List<ChunkKeywordScore> keywordScores = documentChunkMapper.selectKeywordScores(knowledgeBaseId, query, poolSize);
-        // RRF 融合两个通道的排名，输出最终 topK。
-        return fuseByReciprocalRank(vectorDocuments, keywordScores, topK);
+        // RRF 只排序不截断，业务校验之后由服务层选出最终 topK。
+        return fuseByReciprocalRank(vectorDocuments, keywordScores);
     }
 
     /**
@@ -86,18 +87,12 @@ public class HybridChunkRetriever {
      * 将纯向量结果转换为检索结果，保留向量相似度作为分数。
      *
      * @param vectorDocuments 向量检索结果
-     * @param topK            返回数量
      * @return 检索结果列表
      */
-    private List<RetrievedChunk> toVectorOnlyResults(List<Document> vectorDocuments, int topK) {
+    private List<RetrievedChunk> toVectorOnlyResults(List<Document> vectorDocuments) {
         List<RetrievedChunk> results = new ArrayList<>();
 
         for (Document document : vectorDocuments) {
-            // 结果数达到 topK 即停止，候选池可能大于最终返回数。
-            if (results.size() >= topK) {
-                break;
-            }
-
             Long chunkId = parseChunkId(document);
 
             // 缺少 chunkId 的向量记录无法建立业务引用，跳过。
@@ -118,12 +113,10 @@ public class HybridChunkRetriever {
      *
      * @param vectorDocuments 向量通道结果（已按相似度降序）
      * @param keywordScores   关键词通道结果（已按词相似度降序）
-     * @param topK            最终返回数量
      * @return 按融合分数降序的检索结果
      */
     private List<RetrievedChunk> fuseByReciprocalRank(List<Document> vectorDocuments,
-                                                      List<ChunkKeywordScore> keywordScores,
-                                                      int topK) {
+                                                      List<ChunkKeywordScore> keywordScores) {
         int rrfK = retrievalProperties.getRrfK();
         // 融合分数按 chunkId 累加，两个通道都命中的 chunk 会获得更高分数。
         Map<Long, Double> fusedScores = new HashMap<>();
@@ -153,7 +146,6 @@ public class HybridChunkRetriever {
         return fusedScores.entrySet().stream()
                 .sorted(Comparator.comparingDouble(Map.Entry<Long, Double>::getValue).reversed()
                         .thenComparing(Map.Entry::getKey))
-                .limit(topK)
                 .map(entry -> new RetrievedChunk(entry.getKey(), entry.getValue(), vectorDocumentMap.get(entry.getKey())))
                 .toList();
     }

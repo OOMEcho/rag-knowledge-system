@@ -341,6 +341,10 @@ public class RagServiceImpl implements RagService {
             }
 
             references.add(toReference(retrievedChunk, chunk));
+            // 只有业务校验通过的引用才占名额；候选池耗尽时允许返回少于 topK。
+            if (references.size() >= topK) {
+                break;
+            }
         }
 
         return references;

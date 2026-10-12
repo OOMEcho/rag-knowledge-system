@@ -1,14 +1,292 @@
 [
   {
     "name": "reimbursement-deadline",
-    "knowledgeBase": "reimbursement-policy",
+    "stage": "RETRIEVAL",
+    "knowledgeBase": "finance",
     "question": "员工需要在多久内提交报销？",
-    "expectedKeywords": ["30 天", "发票", "付款凭证"]
+    "expectedKeywords": [
+      "30 天"
+    ],
+    "unanswerable": false,
+    "expectedDocument": "reimbursement-policy.md"
   },
   {
-    "name": "large-amount-approval",
-    "knowledgeBase": "reimbursement-policy",
-    "question": "超过 5000 元的报销需要谁审批？",
-    "expectedKeywords": ["部门负责人", "财务负责人"]
+    "name": "deadline-paraphrase",
+    "stage": "RETRIEVAL",
+    "knowledgeBase": "finance",
+    "question": "费用发生之后，一个月内是否需要交报销申请？",
+    "expectedKeywords": [
+      "30 天"
+    ],
+    "unanswerable": false,
+    "expectedDocument": "reimbursement-policy.md"
+  },
+  {
+    "name": "receipt-materials",
+    "stage": "RETRIEVAL",
+    "knowledgeBase": "finance",
+    "question": "提交员工报销需要哪些凭证？",
+    "expectedKeywords": [
+      "发票",
+      "付款凭证",
+      "审批单"
+    ],
+    "unanswerable": false,
+    "expectedDocument": "reimbursement-policy.md"
+  },
+  {
+    "name": "delayed-expense",
+    "stage": "RETRIEVAL",
+    "knowledgeBase": "finance",
+    "question": "报销超过提交期限应该补什么说明？",
+    "expectedKeywords": [
+      "延期原因说明",
+      "部门负责人"
+    ],
+    "unanswerable": false,
+    "expectedDocument": "reimbursement-policy.md"
+  },
+  {
+    "name": "large-expense-approval",
+    "stage": "RETRIEVAL",
+    "knowledgeBase": "finance",
+    "question": "超过 5000 元的员工报销需要谁审批？",
+    "expectedKeywords": [
+      "部门负责人",
+      "财务负责人"
+    ],
+    "unanswerable": false,
+    "expectedDocument": "reimbursement-policy.md"
+  },
+  {
+    "name": "exact-5000",
+    "stage": "RETRIEVAL",
+    "knowledgeBase": "finance",
+    "question": "员工报销恰好 5000 元，需要共同审批吗？",
+    "expectedKeywords": [
+      "不超过 5000 元",
+      "部门负责人"
+    ],
+    "unanswerable": false,
+    "expectedDocument": "reimbursement-policy.md"
+  },
+  {
+    "name": "reimbursement-payment",
+    "stage": "RETRIEVAL",
+    "knowledgeBase": "finance",
+    "question": "财务审核材料完整后，多久安排报销付款？",
+    "expectedKeywords": [
+      "5 个工作日"
+    ],
+    "unanswerable": false,
+    "expectedDocument": "reimbursement-policy.md"
+  },
+  {
+    "name": "personal-expenses",
+    "stage": "RETRIEVAL",
+    "knowledgeBase": "finance",
+    "question": "私人购物是否属于员工可报销的费用？",
+    "expectedKeywords": [
+      "私人购物",
+      "不属于"
+    ],
+    "unanswerable": false,
+    "expectedDocument": "reimbursement-policy.md"
+  },
+  {
+    "name": "travel-application",
+    "stage": "RETRIEVAL",
+    "knowledgeBase": "finance",
+    "question": "差旅报销需要关联什么申请？",
+    "expectedKeywords": [
+      "出差申请单"
+    ],
+    "unanswerable": false,
+    "expectedDocument": "travel-policy.md"
+  },
+  {
+    "name": "travel-expense-lines",
+    "stage": "RETRIEVAL",
+    "knowledgeBase": "finance",
+    "question": "住宿费和交通费需要怎么填写？",
+    "expectedKeywords": [
+      "分别填写明细"
+    ],
+    "unanswerable": false,
+    "expectedDocument": "travel-policy.md"
+  },
+  {
+    "name": "train-seat",
+    "stage": "RETRIEVAL",
+    "knowledgeBase": "finance",
+    "question": "国内公务出差坐高铁默认选择什么座位？",
+    "expectedKeywords": [
+      "二等座"
+    ],
+    "unanswerable": false,
+    "expectedDocument": "travel-policy.md"
+  },
+  {
+    "name": "flight-class",
+    "stage": "RETRIEVAL",
+    "knowledgeBase": "finance",
+    "question": "公务出差默认买什么飞机舱位？",
+    "expectedKeywords": [
+      "经济舱"
+    ],
+    "unanswerable": false,
+    "expectedDocument": "travel-policy.md"
+  },
+  {
+    "name": "meal-allowance",
+    "stage": "RETRIEVAL",
+    "knowledgeBase": "finance",
+    "question": "国内出差每天的餐饮补助是多少？",
+    "expectedKeywords": [
+      "每天 80 元"
+    ],
+    "unanswerable": false,
+    "expectedDocument": "travel-policy.md"
+  },
+  {
+    "name": "procurement-approval",
+    "stage": "RETRIEVAL",
+    "knowledgeBase": "finance",
+    "question": "采购订单超过 20000 元需要谁审批？",
+    "expectedKeywords": [
+      "采购负责人",
+      "总经理"
+    ],
+    "unanswerable": false,
+    "expectedDocument": "procurement-policy.md"
+  },
+  {
+    "name": "supplier-comparison",
+    "stage": "RETRIEVAL",
+    "knowledgeBase": "finance",
+    "question": "采购超过 10000 元需要几家供应商报价？",
+    "expectedKeywords": [
+      "至少 3 家"
+    ],
+    "unanswerable": false,
+    "expectedDocument": "procurement-policy.md"
+  },
+  {
+    "name": "expense-answer",
+    "stage": "ANSWER",
+    "knowledgeBase": "finance",
+    "question": "员工报销超过 5000 元需要谁共同审批？",
+    "expectedKeywords": [
+      "部门负责人",
+      "财务负责人"
+    ],
+    "unanswerable": false,
+    "expectedDocument": "reimbursement-policy.md"
+  },
+  {
+    "name": "travel-answer",
+    "stage": "ANSWER",
+    "knowledgeBase": "finance",
+    "question": "国内出差坐高铁默认是什么座位？",
+    "expectedKeywords": [
+      "二等座"
+    ],
+    "unanswerable": false,
+    "expectedDocument": "travel-policy.md"
+  },
+  {
+    "name": "it-password-answer",
+    "stage": "ANSWER",
+    "knowledgeBase": "it",
+    "question": "员工账号密码最低长度是多少？",
+    "expectedKeywords": [
+      "12"
+    ],
+    "unanswerable": false,
+    "expectedDocument": "it-access-policy.md"
+  },
+  {
+    "name": "unknown-city-limit",
+    "stage": "ANSWER",
+    "knowledgeBase": "finance",
+    "question": "北京公务出差住宿金额上限是多少？",
+    "expectedKeywords": [],
+    "unanswerable": true
+  },
+  {
+    "name": "unknown-contract-penalty",
+    "stage": "ANSWER",
+    "knowledgeBase": "finance",
+    "question": "供应商合同违约金统一比例是多少？",
+    "expectedKeywords": [],
+    "unanswerable": true
+  },
+  {
+    "name": "cross-base-it-question",
+    "stage": "ANSWER",
+    "knowledgeBase": "finance",
+    "question": "员工账号密码至少多少位？",
+    "expectedKeywords": [],
+    "unanswerable": true
+  },
+  {
+    "name": "cross-base-finance-question",
+    "stage": "ANSWER",
+    "knowledgeBase": "it",
+    "question": "员工报销超过 5000 元需要谁共同审批？",
+    "expectedKeywords": [],
+    "unanswerable": true
+  },
+  {
+    "name": "empty-knowledge-base",
+    "stage": "ANSWER",
+    "knowledgeBase": "empty",
+    "question": "员工需要在多久内提交报销？",
+    "expectedKeywords": [],
+    "unanswerable": true
+  },
+  {
+    "name": "followup-expense",
+    "stage": "ANSWER",
+    "knowledgeBase": "finance",
+    "question": "那超过这个金额呢？",
+    "expectedKeywords": [
+      "部门负责人",
+      "财务负责人"
+    ],
+    "unanswerable": false,
+    "expectedDocument": "reimbursement-policy.md",
+    "history": [
+      {
+        "role": "USER",
+        "content": "员工报销不超过 5000 元需要谁审批？"
+      },
+      {
+        "role": "ASSISTANT",
+        "content": "员工报销不超过 5000 元，由部门负责人审批后交财务审核。"
+      }
+    ]
+  },
+  {
+    "name": "followup-procurement",
+    "stage": "ANSWER",
+    "knowledgeBase": "finance",
+    "question": "那超过两万元呢？",
+    "expectedKeywords": [
+      "采购负责人",
+      "总经理"
+    ],
+    "unanswerable": false,
+    "expectedDocument": "procurement-policy.md",
+    "history": [
+      {
+        "role": "USER",
+        "content": "采购订单不超过 20000 元需要谁审批？"
+      },
+      {
+        "role": "ASSISTANT",
+        "content": "采购订单不超过 20000 元，由采购负责人审批。"
+      }
+    ]
   }
 ]
